@@ -117,7 +117,28 @@ static inline void tcp_close_connection(uint8_t remote_ip[NET_IP_LEN], uint16_t 
  */
 void tcp_out(tcp_conn_t *tcp_conn, buf_t *buf, uint16_t src_port, uint8_t *dst_ip, uint16_t dst_port, uint8_t flags) {
     /* =============================== TODO 1 BEGIN =============================== */
+    // Step 1: 添加 TCP 报头
+    buf_add_header(buf, sizeof(tcp_hdr_t));
+    tcp_hdr_t *hdr = (tcp_hdr_t *)buf->data;
 
+    // Step 2: 填充 TCP 首部字段
+    hdr->src_port16 = swap16(src_port);
+    hdr->dst_port16 = swap16(dst_port);
+    hdr->seq = swap32(tcp_conn->seq);
+    hdr->ack = swap32(tcp_conn->ack);
+    // 首部长度：单位为4字节。20字节长度 / 4 = 5，左移4位放到高4位
+    hdr->doff = (sizeof(tcp_hdr_t) / 4) << 4;
+    hdr->flags = flags;
+    hdr->win = swap16(TCP_MAX_WINDOW_SIZE);
+    hdr->uptr = swap16(0);
+    hdr->checksum16 = 0; // 计算前先置零
+
+    // Step 3: 计算并填充校验和
+    // 注意：tcp_out中，源IP是本机IP(net_if_ip)，目的IP是参数dst_ip
+    hdr->checksum16 = transport_checksum(NET_PROTOCOL_TCP, buf, net_if_ip, dst_ip);
+
+    // Step 4: 发送 TCP 数据报
+    ip_out(buf, dst_ip, NET_PROTOCOL_TCP);
     /* =============================== TODO 1 END =============================== */
 }
 
@@ -158,29 +179,34 @@ void tcp_in(buf_t *buf, uint8_t *src_ip) {
 
     /* =============================== TODO 2 BEGIN =============================== */
     /* Step1 ：根据接收包数据更新当前TCP连接内部状态，并填写回复报文的标志部分。 */
-
+    buf_t txbuf;             // 声明发送缓冲区，供后续回复使用
     uint8_t send_flags = 0;  // 回复报文的标志位字段
 
      // 根据当前 TCP 连接的状态进行不同的处理    
     switch (tcp_conn->state) {
         case TCP_STATE_LISTEN:
             // TODO: 仅在收到连接报文时（SYN报文）才做出处理，否则直接返回
-
-            // TODO: 初始化 TCP 连接上下文（tcp_conn结构体）的seq字段
-
-            // TODO: 填写 TCP 连接上下文（tcp_conn结构体）的ack字段
-
-            // TODO: 填写回复标志 send_flags
-
-            // TODO: 进行状态转移
+            if (TCP_FLG_ISSET(recv_flags, TCP_FLG_SYN)) {
+                // TODO: 初始化 TCP 连接上下文（tcp_conn结构体）的seq字段
+                tcp_conn->seq = tcp_generate_initial_seq();
+                // TODO: 填写 TCP 连接上下文（tcp_conn结构体）的ack字段
+                // 期望收到的下一个字节是对方seq + 1 (SYN占1个序列号)
+                tcp_conn->ack = remote_seq + 1;
+                // TODO: 填写回复标志 send_flags
+                send_flags = TCP_FLG_SYN | TCP_FLG_ACK;
+                // TODO: 进行状态转移
+                tcp_conn->state = TCP_STATE_SYN_RECEIVED;
+            }
 
             break;
 
         case TCP_STATE_SYN_RECEIVED:
             // TODO: 仅在收到确认报文时（ACK报文）才做出处理，否则直接返回
-
-            // TODO: 进行状态转移
-
+            if (TCP_FLG_ISSET(recv_flags, TCP_FLG_ACK)) {
+                // TODO: 进行状态转移
+                // 三次握手完成，进入连接状态
+                tcp_conn->state = TCP_STATE_ESTABLISHED;
+            }
             break;
 
         case TCP_STATE_ESTABLISHED:
@@ -191,17 +217,32 @@ void tcp_in(buf_t *buf, uint8_t *src_ip) {
                 return;
             }
             // TODO: 计算接收到的数据长度，更新 ACK
+            uint32_t payload_len = buf->len - tcp_hdr_sz;
+            tcp_conn->ack += payload_len;
 
             // TODO: 如果接收报文携带数据，则填写回复标志 send_flags 发送ACK
+            if (payload_len > 0) {
+                send_flags |= TCP_FLG_ACK;
+            }
 
             // TODO: 如果收到 FIN 报文，则增加 send_flags 相应标志位，并且进行状态转移
+            if (TCP_FLG_ISSET(recv_flags, TCP_FLG_FIN)) {
+                tcp_conn->ack += 1; // FIN 占用一个序列号
+                // 收到对方关闭请求，我们也同意关闭，发送 FIN+ACK
+                send_flags |= TCP_FLG_ACK | TCP_FLG_FIN;
+                tcp_conn->state = TCP_STATE_LAST_ACK;
+            }
 
             break;
 
         case TCP_STATE_LAST_ACK:
             // TODO: 仅在收到确认报文时（ACK报文）才做出处理，否则直接返回
-
-            // TODO: 关闭 TCP 连接
+            if (TCP_FLG_ISSET(recv_flags, TCP_FLG_ACK)) {
+                // TODO: 关闭 TCP 连接
+                tcp_close_connection(remote_ip, remote_port, host_port);
+                // 连接已删除，必须立即返回，防止后续代码访问野指针
+                return;
+            }
 
             break;
 
@@ -212,6 +253,20 @@ void tcp_in(buf_t *buf, uint8_t *src_ip) {
 
     /* Step2 ：如果接收报文携带数据，则将数据部分交付给上层应用 */
     // TODO
+    if (tcp_conn->state == TCP_STATE_ESTABLISHED && (buf->len - tcp_hdr_sz) > 0) {
+        tcp_handler_t *handler = map_get(&tcp_handler_table, &host_port);
+        if (handler) {
+            // 找到处理函数（如HTTP server），剥离TCP头后交付数据
+            buf_remove_header(buf, tcp_hdr_sz);
+            (*handler)(tcp_conn, buf->data, buf->len, src_ip, remote_port);
+        } else {
+            // 端口未打开，回复 ICMP Port Unreachable
+            // 恢复 IPv4 头部，因为 ICMP 需要原 IP 报文作为负载
+            buf_add_header(buf, sizeof(ip_hdr_t));
+            icmp_unreachable(buf, src_ip, ICMP_CODE_PORT_UNREACH);
+            return;
+        }
+    }
 
 
     /* Step3 ：调用tcp_out()发送回复报文，更新TCP连接序列号。 */
@@ -226,8 +281,12 @@ void tcp_in(buf_t *buf, uint8_t *src_ip) {
     }
 
     // TODO:  初始化一个新的缓冲区，发送回复报文
+    buf_init(&txbuf, 0); // 纯控制报文或ACK，无负载
+    tcp_out(tcp_conn, &txbuf, host_port, remote_ip, remote_port, send_flags);
 
     // TODO: 更新序列号
+    // 只有 SYN 和 FIN 会消耗序列号，纯 ACK 不消耗
+    tcp_conn->seq += bytes_in_flight(0, send_flags);
 
     /* =============================== TODO 2 END =============================== */
 }
