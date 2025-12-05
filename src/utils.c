@@ -74,21 +74,17 @@ uint16_t checksum16(uint16_t *data, size_t len) {
     uint16_t *p = data;
     
     // Step 1: 按 16 位分组相加
-    // 这里的循环次数是 len / 2，因为每次处理 2 个字节
     while (len > 1) {
         sum += *p++;
         len -= 2;
     }
 
     // Step 2: 处理剩余 8 位
-    // 如果长度是奇数，最后一个字节被视为高 8 位，低 8 位补 0（或者直接作为单独的一个字节加进去，取决于大小端，网络序通常直接转换）
-    // 注意：这里需要根据具体的实验环境强制转换，通常处理为：
     if (len > 0) {
         sum += *(uint8_t *)p;
     }
 
     // Step 3: 循环处理高 16 位（进位处理）
-    // 将 32 位的和折叠成 16 位
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
     }
@@ -119,15 +115,11 @@ typedef struct peso_hdr {
 uint16_t transport_checksum(uint8_t protocol, buf_t *buf, uint8_t *src_ip, uint8_t *dst_ip) {
     // TO-DO
     // Step 1: 增加 UDP 伪头部
-    // 伪头部大小为 12 字节 (sizeof(peso_hdr_t))
-    // buf_add_header 会调整 buf->data 指针向前移动，留出空间
     if (buf_add_header(buf, sizeof(peso_hdr_t)) != 0) {
         return 0; // 空间不足等错误处理
     }
 
-    // Step 2: 暂存 IP 头部 (也就是刚刚被 buf_add_header 覆盖掉的内存区域)
-    // 实际上 buf_add_header 只是移动了指针，前面的数据（原来的IP头末尾）变成了我们要写伪头的地方
-    // 为了不破坏之前层的数据（虽然在这里通常是被剥离的IP头），我们先备份这块内存
+    // Step 2: 暂存 IP 头部
     peso_hdr_t backup_hdr;
     memcpy(&backup_hdr, buf->data, sizeof(peso_hdr_t));
 
@@ -137,22 +129,17 @@ uint16_t transport_checksum(uint8_t protocol, buf_t *buf, uint8_t *src_ip, uint8
     
     memcpy(peso->src_ip, src_ip, NET_IP_LEN);
     memcpy(peso->dst_ip, dst_ip, NET_IP_LEN);
-    peso->placeholder = 0;           // 必须置0
-    peso->protocol = protocol;       // 协议号 (UDP为17)
-    // UDP长度 = 伪头部之后的总长度 (即 UDP首部 + UDP数据)
-    // 注意：buf->len 现在包含了伪头部，所以要减去 sizeof(peso_hdr_t)
+    peso->placeholder = 0; 
+    peso->protocol = protocol;
     peso->total_len16 = swap16(buf->len - sizeof(peso_hdr_t));
 
     // Step 4: 计算 UDP 校验和
-    // 校验和覆盖：伪头部 + UDP首部 + UDP数据
     uint16_t checksum = checksum16((uint16_t *)buf->data, buf->len);
 
     // Step 5: 恢复 IP 头部
-    // 将备份的数据写回，恢复现场
     memcpy(buf->data, &backup_hdr, sizeof(peso_hdr_t));
 
     // Step 6: 去掉 UDP 伪头部
-    // 将 buf->data 指针移回原来的位置 (指向 UDP 首部)
     buf_remove_header(buf, sizeof(peso_hdr_t));
 
     // Step 7: 返回校验和值

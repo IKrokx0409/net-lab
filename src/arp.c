@@ -65,11 +65,10 @@ void arp_print() {
  */
 void arp_req(uint8_t *target_ip) {
     // TO-DO
-    // 4.1. Step 1: 初始化缓冲区
-    // txbuf 是在 net.h 中定义的全局变量
+    // Step 1: 初始化缓冲区
     buf_init(&txbuf, sizeof(arp_pkt_t));
     
-    // 4.1. Step 2: 填写ARP报头
+    // Step 2: 填写ARP报头
     arp_pkt_t *pkt = (arp_pkt_t *)txbuf.data;
     
     // 使用模板填充固定字段
@@ -78,10 +77,10 @@ void arp_req(uint8_t *target_ip) {
     pkt->hw_len = arp_init_pkt.hw_len;
     pkt->pro_len = arp_init_pkt.pro_len;
 
-    // 4.1. Step 3: 设置操作类型
+    // Step 3: 设置操作类型
     pkt->opcode16 = swap16(ARP_REQUEST);
 
-    // 填写发送方 (本机) 的运行时地址
+    // 填写发送方的运行时地址
     memcpy(pkt->sender_mac, net_if_mac, NET_MAC_LEN);
     memcpy(pkt->sender_ip, net_if_ip, NET_IP_LEN);
 
@@ -89,7 +88,7 @@ void arp_req(uint8_t *target_ip) {
     memset(pkt->target_mac, 0, NET_MAC_LEN); // 请求时目标MAC为全0
     memcpy(pkt->target_ip, target_ip, NET_IP_LEN);
 
-    // 4.1. Step 4: 发送 ARP 报文 (广播)
+    // Step 4: 发送 ARP 报文
     ethernet_out(&txbuf, (uint8_t *)ETHERNET_BROADCAST_ADDR, NET_PROTOCOL_ARP);
 }
 
@@ -101,10 +100,10 @@ void arp_req(uint8_t *target_ip) {
  */
 void arp_resp(uint8_t *target_ip, uint8_t *target_mac) {
     // TO-DO
-    // 4.4. Step 1: 初始化缓冲区
+    // Step 1: 初始化缓冲区
     buf_init(&txbuf, sizeof(arp_pkt_t));
 
-    // 4.4. Step 2: 填写 ARP 报头
+    // Step 2: 填写 ARP 报头
     arp_pkt_t *pkt = (arp_pkt_t *)txbuf.data;
     
     // 使用模板填充固定字段
@@ -114,17 +113,17 @@ void arp_resp(uint8_t *target_ip, uint8_t *target_mac) {
     pkt->pro_len = arp_init_pkt.pro_len;
 
     // 设置操作类型
-    pkt->opcode16 = swap16(ARP_REPLY); // 注意：arp.h 中可能定义为 ARP_REPLY 或 ARP_RESPONSE
+    pkt->opcode16 = swap16(ARP_REPLY); 
 
     // 填写发送方 (本机)
     memcpy(pkt->sender_mac, net_if_mac, NET_MAC_LEN);
     memcpy(pkt->sender_ip, net_if_ip, NET_IP_LEN);
 
-    // 填写目标方 (即 ARP 请求的发送方)
+    // 填写目标方
     memcpy(pkt->target_mac, target_mac, NET_MAC_LEN);
     memcpy(pkt->target_ip, target_ip, NET_IP_LEN);
 
-    // 4.4. Step 3: 发送 ARP 报文 (单播)
+    // Step 3: 发送 ARP 报文 (单播)
     ethernet_out(&txbuf, target_mac, NET_PROTOCOL_ARP);
 }
 
@@ -142,7 +141,7 @@ void arp_in(buf_t *buf, uint8_t *src_mac) {
     
     arp_pkt_t *pkt = (arp_pkt_t *)buf->data;
 
-    // 4.3. Step 2: 报头检查
+    // Step 2: 报头检查
     if (pkt->hw_type16 != arp_init_pkt.hw_type16 ||  // 硬件类型
         pkt->pro_type16 != arp_init_pkt.pro_type16 || // 协议类型
         pkt->hw_len != NET_MAC_LEN ||                 // 硬件地址长
@@ -152,15 +151,14 @@ void arp_in(buf_t *buf, uint8_t *src_mac) {
 
     uint16_t opcode = swap16(pkt->opcode16);
 
-    // 4.3. Step 3: 更新 ARP 表项 (将发送方的 IP-MAC 映射存入/更新)
+    // Step 3: 更新 ARP 表项 (将发送方的 IP-MAC 映射存入/更新)
     map_set(&arp_table, pkt->sender_ip, pkt->sender_mac);
 
-    // 4.3. Step 4: 查看缓存情况
+    // Step 4: 查看缓存情况
     buf_t *cached_buf = (buf_t *)map_get(&arp_buf, pkt->sender_ip);
 
     // 有缓存情况
     if (cached_buf) {
-        // 这是一个我们等待的 ARP 响应
         // 将缓存的 IP 包发送出去，目标 MAC 是刚收到的 ARP 包的源 MAC
         ethernet_out(cached_buf, pkt->sender_mac, NET_PROTOCOL_IP);
         
@@ -171,7 +169,6 @@ void arp_in(buf_t *buf, uint8_t *src_mac) {
     else {
         // 检查这是不是一个针对本机的 ARP 请求
         if (opcode == ARP_REQUEST && memcmp(pkt->target_ip, net_if_ip, NET_IP_LEN) == 0) {
-            // 是针对本机的请求，调用 arp_resp 回应
             arp_resp(pkt->sender_ip, pkt->sender_mac);
         }
     }
@@ -185,26 +182,22 @@ void arp_in(buf_t *buf, uint8_t *src_mac) {
  */
 void arp_out(buf_t *buf, uint8_t *ip) {
     // TO-DO
-    // 4.2. Step 1: 查找 ARP 表
+    // Step 1: 查找 ARP 表
     uint8_t *mac = (uint8_t *)map_get(&arp_table, ip);
 
-    // 4.2. Step 2: 找到对应 MAC 地址
+    // Step 2: 找到对应 MAC 地址
     if (mac) {
         // 找到了，直接发给以太网层
         ethernet_out(buf, mac, NET_PROTOCOL_IP);
     } 
-    // 4.2. Step 3: 未找到对应 MAC 地址
+    // Step 3: 未找到对应 MAC 地址
     else {
         // 检查是否已经有包在等待该 IP 的 ARP 响应
         if (map_get(&arp_buf, ip)) {
-            // 已有包在等待，按实验指导丢弃此包 (防止短时重复)
             return;
         } else {
             // 没有包在等待
-            // 调用 map_set() 缓存这个 IP 包
             map_set(&arp_buf, ip, buf);
-            
-            // 调用 arp_req() 发送 ARP 请求
             arp_req(ip);
         }
     }
